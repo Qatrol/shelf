@@ -1,4 +1,4 @@
-# File Online Manager
+# Shelf — File Online Manager
 
 **Свой файловый менеджер в браузере.** Открывает папки на вашем компьютере или сервере, загружает и скачивает файлы, показывает превью — с одного устройства, без облака и подписок.
 
@@ -46,7 +46,7 @@
 ## Быстрый старт
 
 ```bash
-git clone https://github.com/Qatrol/fileonlinemanager.git
+git clone https://github.com/Qatrol/shelf.git
 cd fileonlinemanager
 npm install
 cp .env.example .env      # Windows: copy .env.example .env
