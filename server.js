@@ -164,6 +164,17 @@ function log(action, req, details) {
   try { fs.appendFileSync(ACCESS_LOG, JSON.stringify(e) + '\n'); } catch (err) {}
 }
 
+// Сравнение пароля за постоянное время: обычное !== утекает длину совпадения.
+function safeEqual(a, b) {
+  const A = Buffer.from(String(a));
+  const B = Buffer.from(String(b));
+  if (A.length !== B.length) {
+    crypto.timingSafeEqual(A, A);
+    return false;
+  }
+  return crypto.timingSafeEqual(A, B);
+}
+
 function requireAuth(req, res, next) {
   const token = req.headers['x-auth-token'] || req.query.token;
   if (token && sessions.has(token)) return next();
@@ -172,7 +183,7 @@ function requireAuth(req, res, next) {
 
 app.post('/api/login', rateLimit('login', 5, 60000), (req, res) => {
   const { password } = req.body || {};
-  if (!password || password !== CONFIG.authPass) {
+  if (!password || !safeEqual(password, CONFIG.authPass)) {
     log('login_failed', req, {});
     console.log(LC.red + '  X WRONG PASSWORD' + LC.reset + ' - IP: ' + (req.ip || '').replace('::ffff:', ''));
     return res.status(401).json({ error: 'Wrong password' });
@@ -259,12 +270,27 @@ app.get('/api/download', requireAuth, async (req, res) => {
   } catch (e) { res.status(404).json({ error: e.message }); }
 });
 
+// Что можно показывать прямо в браузере. Всё остальное уходит только файлом,
+// иначе загруженный .html исполнится на нашем origin и прочитает токен из localStorage.
+const INLINE_SAFE = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico',
+  '.pdf', '.txt', '.log', '.csv', '.md', '.json',
+  '.mp3', '.wav', '.mp4', '.webm'
+]);
+
 app.get('/api/raw', requireAuth, async (req, res) => {
   try {
     const full = safeResolve(req.query.path);
     const st = await fs.promises.stat(full);
     if (!st.isFile()) return res.status(400).json({ error: 'Not a file' });
-    res.setHeader('Content-Type', mime.lookup(full) || 'application/octet-stream');
+    const ext = path.extname(full).toLowerCase();
+    const inline = INLINE_SAFE.has(ext);
+    res.setHeader('Content-Type', inline ? (mime.lookup(full) || 'application/octet-stream')
+                                       : 'application/octet-stream');
+    res.setHeader('Content-Disposition', (inline ? 'inline' : 'attachment') +
+      '; filename="' + encodeURIComponent(path.basename(full)) + '"');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
     res.setHeader('Content-Length', st.size);
     fs.createReadStream(full).pipe(res);
   } catch (e) { res.status(404).json({ error: e.message }); }
@@ -515,8 +541,14 @@ app.get('/api/preview', requireAuth, async (req, res) => {
   }
 });
 
-app.use(express.static(__dirname));
+// Отдаём только сам интерфейс. Раньше здесь стоял express.static(__dirname),
+// и вся папка проекта уходила наружу без пароля: server.js, storage/, логи.
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+
+// На случай, если статика когда-нибудь вернётся: служебные папки закрыты.
+app.use(['/storage', '/storage/*', '/modules', '/modules/*', '/node_modules',
+         '/node_modules/*', '/test_fom', '/test_fom/*'],
+        (req, res) => res.status(403).json({ error: 'Forbidden' }));
 
 app.use((err, req, res, next) => {
   if (err) { console.error('[error]', err.message); return res.status(500).json({ error: err.message }); }
