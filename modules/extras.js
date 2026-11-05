@@ -1,0 +1,26 @@
+const path=require('path'),fs=require('fs'),crypto=require('crypto');
+const STORAGE=path.join(__dirname,'..','storage'),DB=path.join(STORAGE,'extras.json');
+if(!fs.existsSync(STORAGE))fs.mkdirSync(STORAGE,{recursive:true});
+let db={favorites:[],trash:[],recent:[],tags:{}};
+try{if(fs.existsSync(DB))db=Object.assign(db,JSON.parse(fs.readFileSync(DB,'utf8')));}catch(e){}
+db.favorites=db.favorites||[];db.trash=db.trash||[];db.recent=db.recent||[];db.tags=db.tags||{};
+let sT=null;function save(){clearTimeout(sT);sT=setTimeout(()=>{try{fs.writeFileSync(DB,JSON.stringify(db,null,2));}catch(e){}},400);}
+module.exports.mount=function(app,ctx){
+  const{requireAuth,safeResolve,toRel,BASE_ROOT,log}=ctx;
+  const TRASH=path.join(BASE_ROOT,'.trash');
+  if(!fs.existsSync(TRASH))try{fs.mkdirSync(TRASH,{recursive:true});}catch(e){}
+  function stat(p){try{const f=safeResolve(p),s=fs.statSync(f);return{path:p,name:path.basename(p),isDir:s.isDirectory(),size:s.size,mtime:s.mtimeMs,ext:path.extname(p).toLowerCase().slice(1)};}catch(e){return{path:p,name:path.basename(p),isDir:false,size:0,mtime:0,ext:'',missing:true};}}
+  app.get('/api/extras/fav',requireAuth,(req,res)=>res.json({items:db.favorites.map(stat)}));
+  app.post('/api/extras/fav',requireAuth,(req,res)=>{const p=String((req.body||{}).path||'').trim();if(!p)return res.status(400).json({error:'path required'});const i=db.favorites.indexOf(p);if(i>=0)db.favorites.splice(i,1);else db.favorites.push(p);save();res.json({ok:true,active:i<0});});
+  app.get('/api/extras/recent',requireAuth,(req,res)=>res.json({items:db.recent.slice(0,100).map(r=>Object.assign({},r,stat(r.path)))}));
+  app.post('/api/extras/recent',requireAuth,(req,res)=>{const p=String((req.body||{}).path||'').trim();if(!p)return res.status(400).json({error:'path required'});db.recent=db.recent.filter(r=>r.path!==p);db.recent.unshift({path:p,ts:Date.now()});if(db.recent.length>300)db.recent=db.recent.slice(0,300);save();res.json({ok:true});});
+  app.get('/api/extras/tags',requireAuth,(req,res)=>res.json({tags:db.tags}));
+  app.post('/api/extras/tags',requireAuth,(req,res)=>{const p=String((req.body||{}).path||'').trim();if(!p)return res.status(400).json({error:'path required'});const list=Array.isArray((req.body||{}).tags)?req.body.tags:[];const clean=[...new Set(list.map(t=>String(t).trim().slice(0,32)).filter(Boolean))];if(clean.length)db.tags[p]=clean;else delete db.tags[p];save();res.json({ok:true,tags:clean});});
+  app.get('/api/extras/tags/find',requireAuth,(req,res)=>{const t=String(req.query.tag||'').trim().toLowerCase();if(!t)return res.json({items:[]});const items=[];for(const p in db.tags){if(db.tags[p].some(x=>x.toLowerCase()===t))items.push(stat(p));}res.json({items,tag:t});});
+  app.get('/api/extras/trash',requireAuth,(req,res)=>res.json({items:db.trash.slice().reverse()}));
+  app.post('/api/extras/trash',requireAuth,async(req,res)=>{try{const p=String((req.body||{}).path||'').trim();if(!p)return res.status(400).json({error:'path required'});const full=safeResolve(p);if(!fs.existsSync(full))return res.status(404).json({error:'not found'});const st=await fs.promises.stat(full);const id=crypto.randomBytes(8).toString('hex');const safeName=path.basename(full).replace(/[\\/:*?"<>|]/g,'_');const dest=path.join(TRASH,id+'__'+safeName);try{await fs.promises.rename(full,dest);}catch(e){await fs.promises.cp(full,dest,{recursive:true});await fs.promises.rm(full,{recursive:true,force:true});}const entry={id,path:p,name:path.basename(full),ts:Date.now(),size:st.size,isDir:st.isDirectory(),stored:path.basename(dest)};db.trash.push(entry);save();log('trash',req,{path:p});res.json({ok:true,entry});}catch(e){res.status(400).json({error:e.message});}});
+  app.post('/api/extras/trash/restore',requireAuth,async(req,res)=>{try{const id=String((req.body||{}).id||'');const i=db.trash.findIndex(t=>t.id===id);if(i<0)return res.status(404).json({error:'not in trash'});const t=db.trash[i];const src=path.join(TRASH,t.stored);if(!fs.existsSync(src))return res.status(404).json({error:'trash file missing'});const dest=safeResolve(t.path);const dir=path.dirname(dest);if(!fs.existsSync(dir))await fs.promises.mkdir(dir,{recursive:true});let fd2=dest;if(fs.existsSync(dest)){const ext=path.extname(dest),base=path.basename(dest,ext);fd2=path.join(dir,base+'_restored_'+Date.now()+ext);}await fs.promises.rename(src,fd2);db.trash.splice(i,1);save();res.json({ok:true,path:toRel(fd2)});}catch(e){res.status(400).json({error:e.message});}});
+  app.post('/api/extras/trash/delete',requireAuth,async(req,res)=>{try{const id=String((req.body||{}).id||'');const i=db.trash.findIndex(t=>t.id===id);if(i<0)return res.status(404).json({error:'not in trash'});await fs.promises.rm(path.join(TRASH,db.trash[i].stored),{recursive:true,force:true});db.trash.splice(i,1);save();res.json({ok:true});}catch(e){res.status(400).json({error:e.message});}});
+  app.post('/api/extras/trash/empty',requireAuth,async(req,res)=>{let n=0;for(const t of db.trash){try{await fs.promises.rm(path.join(TRASH,t.stored),{recursive:true,force:true});n++;}catch(e){}}db.trash=[];save();res.json({ok:true,removed:n});});
+  console.log('[extras] mounted: favorites, tags, recent, trash');
+};

@@ -1,0 +1,25 @@
+# секреты и личные данные
+.env
+.env.*
+
+# данные приложения: логи, чат, заметки, И СОХРАНЁННЫЕ ПАРОЛИ
+storage/
+*.log
+
+# зависимости
+node_modules/
+
+# копии и бэкапы
+test_fom/
+*.bak
+*.bak2
+*.bak-*
+*.before-rollback
+
+# система
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# шаблон конфига нужен в репозитории
+!.env.example
